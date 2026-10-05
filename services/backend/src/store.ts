@@ -61,6 +61,15 @@ const saveRsnTokenId = async (rsnTokenId: string) => {
   return void (await kv?.set('rsn-token-id', rsnTokenId));
 };
 
+/** One atomic record; a missing configured store must not become a no-op. */
+const saveAvalanchePublication = (
+  key: string,
+  payload: string,
+): Promise<unknown> => {
+  if (!kv) throw new Error('Avalanche publication requires configured KV');
+  return kv.set(key, payload);
+};
+
 export {
   flushStore,
   saveTokensConfig,
@@ -68,4 +77,5 @@ export {
   savePrices,
   saveTx,
   saveRsnTokenId,
+  saveAvalanchePublication,
 };

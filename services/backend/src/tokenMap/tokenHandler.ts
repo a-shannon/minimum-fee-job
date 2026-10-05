@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import { ERGO_CHAIN, NATIVE_RESIDENCY, TokenMap } from '@rosen-bridge/tokens';
 
 import { minimumFeeConfigs } from '../configs';
+import { freezeAvalancheFeePlan } from '../minimum-fee/avalancheFeePlan';
 import { SupportedTokenConfig } from '../types';
 
 class TokenHandler {
   private static instance: TokenHandler;
   protected tokenMap: TokenMap;
   protected supportedTokens: Array<SupportedTokenConfig>;
+  private originalTokenMap: unknown;
 
   private constructor() {
     // do nothing
@@ -26,9 +28,11 @@ class TokenHandler {
       TokenHandler.instance = new TokenHandler();
       const tokensJson: string = fs.readFileSync(tokensPath, 'utf8');
       const tokens = JSON.parse(tokensJson).tokens;
+      const originalTokens = freezeAvalancheFeePlan(structuredClone(tokens));
       const tokenMap = new TokenMap();
       await tokenMap.updateConfigByJson(tokens);
       TokenHandler.instance.tokenMap = tokenMap;
+      TokenHandler.instance.originalTokenMap = originalTokens;
 
       // initialize supported tokens
       const rawSupportedTokens = minimumFeeConfigs.supportedTokens;
@@ -88,6 +92,9 @@ class TokenHandler {
   getTokenMap = (): TokenMap => {
     return this.tokenMap;
   };
+
+  /** Return the captured immutable original token map used to bind fee generation. */
+  getOriginalTokenMap = (): unknown => this.originalTokenMap;
 
   /**
    * @returns the supported tokens

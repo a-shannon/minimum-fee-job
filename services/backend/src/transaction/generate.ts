@@ -6,6 +6,14 @@ import JsonBigInt from '@rosen-bridge/json-bigint';
 
 import { minimumFeeConfigs } from '../configs';
 import {
+  AvalancheFeeConstruction,
+  avalancheBoxBytes,
+  avalancheCandidateBytes,
+  cloneAvalancheCandidate,
+  enterAvalancheFeeConstruction,
+  bindAvalancheFeeTransaction,
+} from '../minimum-fee/avalancheFeeIntegration';
+import {
   getAddressBoxes,
   getErgoHeight,
   getStateContext,
@@ -27,7 +35,83 @@ const boxSelection = new ErgoBoxSelection(
 export const generateTransaction = async (
   order: ConfigOrder,
   inputs: Array<wasm.ErgoBox>,
+  construction?: AvalancheFeeConstruction,
 ): Promise<TransactionEIP19> => {
+  enterAvalancheFeeConstruction(construction);
+  const policy = construction?.policy ?? minimumFeeConfigs;
+  const suppliedOrder = order;
+  const suppliedInputs = inputs;
+  /** Serialize the supplied payment order with exact assets and canonical candidate bytes for later freshness checks. */
+  const orderIdentity = () =>
+    JsonBigInt.stringify(
+      suppliedOrder.map((row) => ({
+        address: row.address,
+        assets: row.assets,
+        box: avalancheCandidateBytes(row.box),
+      })),
+    );
+  /** Serialize the supplied input boxes in order using their canonical bytes for later freshness checks. */
+  const inputIdentity = () =>
+    JsonBigInt.stringify(suppliedInputs.map(avalancheBoxBytes));
+  const capturedOrder = construction ? orderIdentity() : undefined;
+  const capturedInputs = construction ? inputIdentity() : undefined;
+  /** Recheck the construction permit and refuse changes to the captured order or input boxes. */
+  const assertFresh = () => {
+    construction?.assertFresh();
+    if (
+      construction &&
+      (orderIdentity() !== capturedOrder || inputIdentity() !== capturedInputs)
+    )
+      throw new Error('Avalanche transaction construction inputs changed');
+  };
+  if (construction) {
+    const expectedOrder = construction.entries.map((entry) => ({
+      address: policy.minimumFeeAddress,
+      assets: {
+        nativeToken: policy.minBoxErg,
+        tokens: [
+          { id: policy.minimumFeeNFT, value: 1n },
+          ...(entry.tokenId === 'erg'
+            ? []
+            : [{ id: entry.ergoTokenId, value: 1n }]),
+        ],
+      },
+      box: avalancheCandidateBytes(
+        cloneAvalancheCandidate(entry.candidate, policy.minBoxErg),
+      ),
+    }));
+    if (
+      JsonBigInt.stringify(expectedOrder) !== capturedOrder ||
+      JsonBigInt.stringify(
+        construction.entries.flatMap((entry) =>
+          entry.current ? [entry.current] : [],
+        ),
+      ) !== capturedInputs
+    )
+      throw new Error(
+        'Avalanche transaction order does not match bound fee plan',
+      );
+    order = order.map((row) => ({
+      address: row.address,
+      assets: structuredClone(row.assets),
+      box: cloneAvalancheCandidate(avalancheCandidateBytes(row.box)),
+    }));
+    inputs = inputs.map((box) =>
+      wasm.ErgoBox.sigma_parse_bytes(
+        Buffer.from(avalancheBoxBytes(box), 'base64'),
+      ),
+    );
+    const expectedTree = wasm.Address.from_base58(policy.minimumFeeAddress)
+      .to_ergo_tree()
+      .to_base16_bytes();
+    for (const row of order)
+      if (
+        row.box.ergo_tree().to_base16_bytes() !== expectedTree ||
+        JsonBigInt.stringify(getBoxAssets(row.box)) !==
+          JsonBigInt.stringify(row.assets)
+      )
+        throw new Error('Avalanche fee output differs from transaction policy');
+  }
   logger.debug(
     `Generating Ergo transaction for Order: ${JsonBigInt.stringify(order)}`,
   );
@@ -53,15 +137,25 @@ export const generateTransaction = async (
   logger.debug(`Required assets: ${JsonBigInt.stringify(requiredAssets)}`); // it does not consider required Erg for change box and tx fee, which is calculated by the selection package
 
   // call getCovering to get enough boxes
+  const addressBoxes = await getAddressBoxes(policy.feeAddress);
+  assertFresh();
+  const ownedAddressBoxes = construction
+    ? addressBoxes.map((box) =>
+        wasm.ErgoBox.sigma_parse_bytes(
+          Buffer.from(avalancheBoxBytes(box), 'base64'),
+        ),
+      )
+    : addressBoxes;
   const coveredBoxes = await boxSelection.getCoveringBoxes(
     requiredAssets,
     [],
     new Map(),
-    (await getAddressBoxes(minimumFeeConfigs.feeAddress)).values(),
-    minimumFeeConfigs.minBoxErg,
+    ownedAddressBoxes.values(),
+    policy.minBoxErg,
     undefined,
-    () => minimumFeeConfigs.txFee,
+    () => policy.txFee,
   );
+  assertFresh();
 
   // check if boxes covered requirements
   if (!coveredBoxes.covered) {
@@ -73,7 +167,15 @@ export const generateTransaction = async (
   }
 
   // add boxes to input list
-  inputs.push(...coveredBoxes.boxes);
+  inputs.push(
+    ...(construction
+      ? coveredBoxes.boxes.map((box) =>
+          wasm.ErgoBox.sigma_parse_bytes(
+            Buffer.from(avalancheBoxBytes(box), 'base64'),
+          ),
+        )
+      : coveredBoxes.boxes),
+  );
 
   // generate input boxes objects
   let remainingAssets: AssetBalance = {
@@ -92,6 +194,14 @@ export const generateTransaction = async (
   // generate output boxes objects
   const outBoxCandidates = wasm.ErgoBoxCandidates.empty();
   const currentHeight = await getErgoHeight();
+  assertFresh();
+  if (
+    construction &&
+    (!Number.isSafeInteger(currentHeight) ||
+      currentHeight < 0 ||
+      currentHeight > 2147483647)
+  )
+    throw new Error('Invalid Ergo construction height');
   order.forEach((order) => {
     // build and add box
     const box = order.box;
@@ -101,7 +211,7 @@ export const generateTransaction = async (
     remainingAssets = subtractAssetBalance(
       remainingAssets,
       getBoxAssets(box),
-      minimumFeeConfigs.minBoxErg,
+      policy.minBoxErg,
     );
   });
   logger.debug(`Remaining assets: ${JsonBigInt.stringify(remainingAssets)}`);
@@ -110,11 +220,11 @@ export const generateTransaction = async (
   const boxBuilder = new wasm.ErgoBoxCandidateBuilder(
     wasm.BoxValue.from_i64(
       wasm.I64.from_str(
-        (remainingAssets.nativeToken - minimumFeeConfigs.txFee).toString(),
+        (remainingAssets.nativeToken - policy.txFee).toString(),
       ),
     ),
     wasm.Contract.new(
-      wasm.Address.from_base58(minimumFeeConfigs.feeAddress).to_ergo_tree(),
+      wasm.Address.from_base58(policy.feeAddress).to_ergo_tree(),
     ),
     currentHeight,
   );
@@ -136,19 +246,19 @@ export const generateTransaction = async (
   );
 
   // create the transaction
+  assertFresh();
   const txCandidate = wasm.TxBuilder.new(
     inBoxSelection,
     outBoxCandidates,
     currentHeight,
-    wasm.BoxValue.from_i64(
-      wasm.I64.from_str(minimumFeeConfigs.txFee.toString()),
-    ),
-    wasm.Address.from_base58(minimumFeeConfigs.feeAddress),
+    wasm.BoxValue.from_i64(wasm.I64.from_str(policy.txFee.toString())),
+    wasm.Address.from_base58(policy.feeAddress),
   );
   const tx = txCandidate.build();
 
   // create ReducedTransaction object
   const ctx = await getStateContext();
+  assertFresh();
   const reducedTx = wasm.ReducedTransaction.from_unsigned_tx(
     tx,
     inErgoBoxes,
@@ -162,11 +272,14 @@ export const generateTransaction = async (
   );
   const ergoTx: TransactionEIP19 = {
     reducedTx: serializedTx,
-    sender: minimumFeeConfigs.feeAddress,
+    sender: policy.feeAddress,
     inputs: inputs.map((input) =>
       Buffer.from(input.sigma_serialize_bytes()).toString('base64'),
     ),
   };
 
-  return ergoTx;
+  assertFresh();
+  return construction
+    ? bindAvalancheFeeTransaction(construction, ergoTx)
+    : ergoTx;
 };

@@ -25,17 +25,25 @@ import {
   getConfigDifferencePercent,
   isDifferencePercentSufficient,
 } from '../utils/utils';
+import {
+  consumeAvalancheFeeGeneration,
+  assertAvalancheFeeHistory,
+  avalancheFeeChangeRequired,
+  bindAvalancheUpdatedConfigs,
+} from './avalancheFeeIntegration';
 
 const logger = DefaultLogger.getInstance().child(import.meta.url);
 
 export const updateAndGenerateFeeConfig = async (
   newConfigs: Map<string, MinimumFeeConfig>,
-  chainHeights: Map<Chains, number>,
+  chainHeights: Map<string, number>,
 ) => {
+  const avalanche = consumeAvalancheFeeGeneration(newConfigs, chainHeights);
   const updatedFeeConfigs: Map<string, UpdatedFeeConfig> = new Map();
   const feeDifferences: Map<string, FeeDifferencePercents | undefined> =
     new Map();
-  for (const token of TokenHandler.getInstance().getSupportedTokens()) {
+  for (const token of avalanche?.generation.source.tokens ??
+    TokenHandler.getInstance().getSupportedTokens()) {
     logger.debug(`Combining old and new config of token [${token.name}]`);
     const newConfig = newConfigs.get(token.tokenId)!;
 
@@ -43,6 +51,7 @@ export const updateAndGenerateFeeConfig = async (
       token.ergoSideTokenId,
       newConfig,
       chainHeights,
+      avalanche,
     );
     const feeConfig = result.config;
     feeDifferences.set(token.tokenId, result.differencePercent);
@@ -52,6 +61,8 @@ export const updateAndGenerateFeeConfig = async (
         new: feeConfig.new,
       });
   }
+  avalanche?.assertFresh();
+  bindAvalancheUpdatedConfigs(avalanche, updatedFeeConfigs);
   return {
     config: updatedFeeConfigs,
     feeDifferences: feeDifferences,
@@ -61,7 +72,8 @@ export const updateAndGenerateFeeConfig = async (
 const updateFeeConfig = async (
   tokenId: string,
   newFeeConfig: MinimumFeeConfig,
-  chainHeights: Map<Chains, number>,
+  chainHeights: Map<string, number>,
+  avalanche: ReturnType<typeof consumeAvalancheFeeGeneration>,
 ): Promise<{
   config: {
     current: MinimumFeeBox;
@@ -81,9 +93,19 @@ const updateFeeConfig = async (
     if (res) break;
   }
   const box = tokenMinimumFeeBox.getBox();
+  avalanche?.assertFresh();
+  // MinimumFeeBoxBuilder.prune mutates rows; preserve the captured candidate batch.
+  const candidateForBuilder = avalanche
+    ? new MinimumFeeConfig(structuredClone(newFeeConfig.getConfig()))
+    : newFeeConfig;
   if (box) {
     logger.debug(`Found a config for token [${tokenId}]`);
-    const builder = await cleanOldConfig(tokenMinimumFeeBox, chainHeights);
+    const builder = await cleanOldConfig(
+      tokenMinimumFeeBox,
+      chainHeights,
+      avalanche,
+    );
+    avalanche?.assertFresh();
 
     // calculate config differences
     const differencePercent = getConfigDifferencePercent(
@@ -100,6 +122,11 @@ const updateFeeConfig = async (
     );
     // check if fee difference is sufficient for update
     const isFeeDifferenceSufficient =
+      avalancheFeeChangeRequired(
+        avalanche,
+        builder.getConfigs().at(-1)!,
+        newFeeConfig.getConfig(),
+      ) ||
       isDifferencePercentSufficient(
         Number(differencePercent.bridgeFee.value),
         bridgeFeeTriggerPercent,
@@ -156,7 +183,7 @@ const updateFeeConfig = async (
       );
     }
     // add new config
-    builder.addConfig(newFeeConfig).prune();
+    builder.addConfig(candidateForBuilder).prune();
     return {
       config: {
         current: tokenMinimumFeeBox,
@@ -178,7 +205,7 @@ const updateFeeConfig = async (
       .setHeight(currentErgoHeight)
       .setToken(tokenId)
       .setValue(minimumFeeConfigs.minBoxErg)
-      .addConfig(newFeeConfig)
+      .addConfig(candidateForBuilder)
       .prune();
 
     return {
@@ -193,11 +220,16 @@ const updateFeeConfig = async (
 
 const cleanOldConfig = async (
   tokenMinimumFeeBox: MinimumFeeBox,
-  chainHeights: Map<Chains, number>,
+  chainHeights: Map<string, number>,
+  avalanche: ReturnType<typeof consumeAvalancheFeeGeneration>,
 ) => {
-  const getCurrentHeight = (chain: Chains) => {
+  /** Read the fetched chain height and refuse missing heights while allowing finalized Avalanche height zero. */
+  const getCurrentHeight = (chain: string) => {
     const currentHeight = chainHeights.get(chain);
-    if (!currentHeight)
+    if (
+      currentHeight === undefined ||
+      (chain !== 'avalanche' && !currentHeight)
+    )
       throw Error(
         `Impossible behavior: chain [${chain}] is supported but its height is not fetched`,
       );
@@ -208,16 +240,22 @@ const cleanOldConfig = async (
   const builder = tokenMinimumFeeBox.toBuilder();
   builder.setHeight(getCurrentHeight(Chains.ERGO));
   const fees = builder.getConfigs();
+  assertAvalancheFeeHistory(avalanche, fees);
+  const chains = avalanche
+    ? [...SUPPORTED_CHAINS, 'avalanche']
+    : SUPPORTED_CHAINS;
 
   // remove unused configs
   let i = 0;
   let configIsPassed = false;
   for (i = fees.length - 1; i >= 0; i--) {
-    for (const chain of SUPPORTED_CHAINS) {
+    for (const chain of chains) {
       const currentHeight = getCurrentHeight(chain);
       if (
         Object.hasOwn(fees[i].heights, chain) &&
-        fees[i].heights[chain] <= currentHeight
+        (chain === 'avalanche'
+          ? fees[i].heights[chain] < currentHeight
+          : fees[i].heights[chain] <= currentHeight)
       ) {
         configIsPassed = true;
         break;
@@ -232,9 +270,12 @@ const cleanOldConfig = async (
   for (; i >= 0; i--) {
     if (allHeightsAreSafeToRemove) builder.removeConfig(i);
 
-    const heightsAreNotSafe = SUPPORTED_CHAINS.some((chain) => {
+    const heightsAreNotSafe = chains.some((chain) => {
       const currentHeight = getCurrentHeight(chain);
-      const feeGuaranteeGap = feeGuaranteeDuration.get(chain);
+      const feeGuaranteeGap =
+        chain === 'avalanche'
+          ? avalanche!.generation.policy.guarantee
+          : feeGuaranteeDuration.get(chain);
       if (!feeGuaranteeGap)
         throw Error(
           `Impossible behavior: chain [${chain}] is supported but its fee guarantee gap is not set`,

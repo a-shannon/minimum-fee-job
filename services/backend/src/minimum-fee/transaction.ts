@@ -7,12 +7,40 @@ import { TokenHandler } from '../tokenMap/tokenHandler';
 import { generateTransaction } from '../transaction/generate';
 import { ConfigOrder } from '../transaction/types';
 import { UpdatedFeeConfig } from '../types';
+import {
+  consumeAvalancheUpdatedConfigs,
+  cloneAvalancheCandidate,
+} from './avalancheFeeIntegration';
 
 const logger = DefaultLogger.getInstance().child(import.meta.url);
 
 export const updateConfigsTransaction = async (
   feeConfigs: Map<string, UpdatedFeeConfig>,
 ) => {
+  const construction = consumeAvalancheUpdatedConfigs(feeConfigs);
+  if (construction) {
+    const { policy } = construction;
+    const inputs = construction.entries.flatMap((entry) =>
+      entry.current
+        ? [ErgoBox.sigma_parse_bytes(Buffer.from(entry.current, 'base64'))]
+        : [],
+    );
+    const order: ConfigOrder = construction.entries.map((entry) => ({
+      address: policy.minimumFeeAddress,
+      assets: {
+        nativeToken: policy.minBoxErg,
+        tokens: [
+          { id: policy.minimumFeeNFT, value: 1n },
+          ...(entry.tokenId === 'erg'
+            ? []
+            : [{ id: entry.ergoTokenId, value: 1n }]),
+        ],
+      },
+      box: cloneAvalancheCandidate(entry.candidate, policy.minBoxErg),
+    }));
+    construction.assertFresh();
+    return await generateTransaction(order, inputs, construction);
+  }
   const inputs: Array<ErgoBox> = [];
   const order: ConfigOrder = [];
   for (const token of TokenHandler.getInstance().getSupportedTokens()) {

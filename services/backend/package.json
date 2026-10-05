@@ -16,6 +16,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
+    "test:avalanche": "node --import tsx ../../scripts/test-avalanche.mjs --service backend",
     "lint": "eslint --fix . && npm run prettify",
     "lint:check": "eslint . --max-warnings=0 && npm run prettify:check",
     "prettify": "prettier --write . --ignore-path ../../.gitignore",

@@ -25,39 +25,67 @@ import { TokenHandler } from '../tokenMap/tokenHandler';
 import { Chains, SUPPORTED_CHAINS, SupportedTokenConfig } from '../types';
 import { ERC20_TRANSFER_GAS, feeRatioDivisor } from '../utils/consts';
 import { applyHighDecimal } from '../utils/utils';
+import {
+  beginAvalancheFeeGeneration,
+  finishAvalancheFeeGeneration,
+} from './avalancheFeeIntegration';
 
 const logger = DefaultLogger.getInstance().child(import.meta.url);
 
 export const generateNewFeeConfig = async (
   prices: Map<string, number>,
-  chainHeights: Map<Chains, number>,
+  chainHeights: Map<string, number>,
 ) => {
-  const supportedTokens = TokenHandler.getInstance().getSupportedTokens();
+  const handler = TokenHandler.getInstance();
+  const avalanche = beginAvalancheFeeGeneration(
+    () => ({
+      tokens: handler.getSupportedTokens(),
+      rawMap: handler.getOriginalTokenMap(),
+      currentRawMap: handler.getTokenMap().getRawConfig(),
+    }),
+    () => ({
+      legacyNumericPrices: Array.from(prices),
+      rsnTokenId: minimumFeeConfigs.RSNTokenId,
+    }),
+  );
+  const capturedPrices = avalanche?.publicationInputs
+    ? new Map(avalanche.publicationInputs.legacyNumericPrices)
+    : prices;
+  const supportedTokens =
+    avalanche?.source.tokens ?? handler.getSupportedTokens();
   const newFeeConfigs: Map<string, MinimumFeeConfig> = new Map();
 
   const rsnTokenConfig = supportedTokens.find(
-    (token) => token.tokenId === minimumFeeConfigs.RSNTokenId,
+    (token) =>
+      token.tokenId ===
+      (avalanche?.publicationInputs?.rsnTokenId ??
+        minimumFeeConfigs.RSNTokenId),
   );
   if (!rsnTokenConfig) throw Error(`Token [RSN] is not found in config`);
-  const rsnPrice = prices.get(rsnTokenConfig.tokenId);
+  const rsnPrice = capturedPrices.get(rsnTokenConfig.tokenId);
   if (!rsnPrice) throw Error(`RSN price is required`);
 
   logger.debug(`Fetching Bitcoin fee ratio`);
   const bitcoinFeeRatioMap = await getBitcoinFeeRatio();
+  avalanche?.assertFresh();
 
   logger.debug(`Fetching Doge fee ratio`);
   const dogeFeeRatio = await getDogeFeeRatio();
+  avalanche?.assertFresh();
 
   logger.debug(`Fetching Firo fee ratio`);
   const firoFeeRatio = await getFiroFeeRatio();
+  avalanche?.assertFresh();
 
   logger.debug(`Fetching Handshake fee ratio`);
   const handshakeFeeRatio = await getHandshakeFeeRatio();
+  avalanche?.assertFresh();
 
   logger.debug(
     `Fetching Ethereum fee history (for [${minimumFeeConfigs.ethereumAvgGasPricePeriod}] latest blocks)`,
   );
   const ethereumFeeHistory = await getEthereumFeeHistory();
+  avalanche?.assertFresh();
   const ethereumAvgGasPrice =
     ethereumFeeHistory.baseFeePerGas.reduce(
       (acc, cur) => acc + BigInt(cur),
@@ -77,7 +105,7 @@ export const generateNewFeeConfig = async (
 
     const feeConfig = await feeConfigFromPrice(
       token.tokenId,
-      prices,
+      capturedPrices,
       chainHeights,
       rsnPrice,
       rsnTokenConfig.decimals,
@@ -88,16 +116,18 @@ export const generateNewFeeConfig = async (
       firoFeeRatio,
       handshakeFeeRatio,
       ethereumNetworkFeeInEther,
+      avalanche !== undefined,
     );
     newFeeConfigs.set(token.tokenId, feeConfig);
   }
+  await finishAvalancheFeeGeneration(avalanche, newFeeConfigs, chainHeights);
   return newFeeConfigs;
 };
 
 export const feeConfigFromPrice = async (
   tokenId: string,
   prices: Map<string, number>,
-  chainHeights: Map<Chains, number>,
+  chainHeights: Map<string, number>,
   rsnPrice: number,
   rsnDecimal: number,
   tokenDecimal: number,
@@ -107,6 +137,7 @@ export const feeConfigFromPrice = async (
   firoFeeRatio: number,
   handshakeFeeRatio: number,
   ethereumNetworkFeeInEther: number,
+  avalancheEnabled = false,
 ): Promise<MinimumFeeConfig> => {
   const getCurrentHeight = (chain: Chains) => {
     const currentHeight = chainHeights.get(chain);
@@ -139,7 +170,10 @@ export const feeConfigFromPrice = async (
     );
   const chains = Object.keys(tokenSet);
   logger.debug(`supported chains for token [${tokenId}]: ${chains}`);
-  const unsupportedChains = difference(chains, SUPPORTED_CHAINS);
+  const unsupportedChains = difference(
+    chains,
+    avalancheEnabled ? [...SUPPORTED_CHAINS, 'avalanche'] : SUPPORTED_CHAINS,
+  );
   if (unsupportedChains.length > 0)
     throw Error(
       `Failed to create Fee Config for token [${tokenId}]: Token exists on chains [${unsupportedChains.join(',')}] but they are not supported`,

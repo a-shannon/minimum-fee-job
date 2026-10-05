@@ -12,8 +12,13 @@ import {
   tokensPath,
 } from './configs';
 import { initDataSource } from './database/initDataSource';
+import {
+  usesAvalancheFeePublication,
+  validateAvalancheFeeStartup,
+} from './minimum-fee/avalancheFeeIntegration';
 import { generateNewFeeConfig } from './minimum-fee/newConfig';
 import { getConfigTokenPrices } from './minimum-fee/prices';
+import { publishAvalancheFee } from './minimum-fee/publication';
 import { updateConfigsTransaction } from './minimum-fee/transaction';
 import { updateAndGenerateFeeConfig } from './minimum-fee/updateConfig';
 import {
@@ -35,6 +40,7 @@ import {
   saveTx,
   saveTokenMap,
   saveRsnTokenId,
+  saveAvalanchePublication,
 } from './store';
 import { TokenHandler } from './tokenMap/tokenHandler';
 import { Chains, DiscordPayloadType, UpdatedFeeConfig } from './types';
@@ -79,6 +85,7 @@ const main = async () => {
     priceResult.prices,
     chainHeights,
   );
+  const avalanchePublication = usesAvalancheFeePublication(newFeeConfigs);
 
   newFeeConfigs.forEach((feeConfig, tokenId) => {
     logger.debug(
@@ -113,6 +120,16 @@ const main = async () => {
       )}`,
     );
   });
+
+  if (avalanchePublication) {
+    const source =
+      updatedConfigs.size === 0
+        ? updatedConfigs
+        : await updateConfigsTransaction(updatedConfigs);
+    await publishAvalancheFee(source, saveAvalanchePublication);
+    logger.info('Stored one Avalanche fee publication envelope');
+    return;
+  }
 
   if (updatedConfigs.size === 0) {
     logger.info(`No config need update`);
@@ -246,6 +263,7 @@ const interval = () => {
 };
 
 const initializeService = async () => {
+  validateAvalancheFeeStartup();
   await initDataSource();
   await TokenHandler.init(tokensPath);
   firoClient.setupSocket();
