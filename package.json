@@ -11,6 +11,8 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces",
+    "test:avalanche": "node --import tsx scripts/test-avalanche.mjs",
+    "prepare:avalanche-fixtures": "node scripts/prepare-avalanche-fixtures.mjs",
     "coverage": "npm run coverage --workspaces",
     "lint": "npm run lint --workspaces",
     "lint:check": "npm run lint:check --workspaces",
