@@ -14,8 +14,10 @@ export const fetchFeesByToken = async () => {
   });
 };
 
-export const useFeesByToken = () => {
+/** Read the existing fee query when enabled so Avalanche snapshot consumers can disable its independent legacy fetch. */
+export const useFeesByToken = (enabled = true) => {
   return useQuery({
+    enabled,
     queryKey: ['feesByToken'],
     queryFn: async () => {
       return await unwrap(getFeesByTokenSafe)();

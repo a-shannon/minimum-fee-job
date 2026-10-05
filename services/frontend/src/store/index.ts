@@ -16,6 +16,12 @@ import {
 import { wrap } from '@/safeServerAction';
 import { PartialSupportedTokenConfig } from '@/types';
 
+import {
+  avalancheUiRequested,
+  requireReviewedAvalancheUi,
+} from '../avalanche/existingUi';
+import { loadAvalanchePublication } from './avalanchePublication';
+
 /**
  * connect to the redis client
  */
@@ -77,7 +83,16 @@ export const getPricesSafe = wrap(getPrices);
 /**
  * get tx data from the store
  */
-export const getTx = async (): Promise<string> => {
+export const getTx = async (
+  expectedPublicationId?: string,
+): Promise<string> => {
+  if (avalancheUiRequested()) {
+    const snapshot = requireReviewedAvalancheUi(
+      await loadAvalanchePublication(),
+      expectedPublicationId,
+    );
+    return JSON.stringify(snapshot.publication.transaction);
+  }
   const client = await connectRedisClient();
 
   try {

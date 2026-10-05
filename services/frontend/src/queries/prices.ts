@@ -14,8 +14,10 @@ export const fetchPrices = async () => {
   });
 };
 
-export const usePrices = () => {
+/** Read the existing price query when enabled so Avalanche snapshot consumers can disable its independent legacy fetch. */
+export const usePrices = (enabled = true) => {
   return useQuery({
+    enabled,
     queryKey: ['prices'],
     queryFn: async () => {
       return await unwrap(getPricesSafe)();

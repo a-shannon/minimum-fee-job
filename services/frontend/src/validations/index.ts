@@ -1,5 +1,6 @@
 import { Validation } from '@/types';
 
+import { validateAvalancheNetworkFee } from './validateAvalancheNetworkFee';
 import { validateBridgeFeeByRsnRatio } from './validateBridgeFeeByRsnRatio';
 import { validateBridgeFeeByToken } from './validateBridgeFeeByToken';
 import { validateChainConfigsSameness } from './validateChainConfigsSameness';
@@ -51,5 +52,15 @@ export const validations: Validation[] = [
     title: 'Network Fee (Cardano)',
     id: 'network-fee-cardano',
     hint: 'Cardano network fee calculation should be the expected predefined number',
+  },
+];
+
+/** Selects the exact economic column applicable to a reviewed Avalanche publication. */
+export const avalancheValidations = (publicationId: string): Validation[] => [
+  {
+    validate: validateAvalancheNetworkFee(publicationId),
+    title: 'Network Fee (Avalanche)',
+    id: 'network-fee-avalanche',
+    hint: 'Exact published Avalanche updates are compared with the independently configured economic reference. Other targets have structural review only.',
   },
 ];

@@ -15,27 +15,45 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import type { UseQueryResult } from '@tanstack/react-query';
 
 import { useFeesByToken, usePrices, useTokenMap } from '@/queries';
 import { getTokenInfo } from '@/utils';
-import { validations } from '@/validations';
+import { validations, avalancheValidations } from '@/validations';
 
+import type { AvalancheFeeUiSnapshot } from '../avalanche/existingUi';
 import { Validation } from './Validation';
 
 /**
  * Render validations table
  */
-export const Validations = () => {
-  const feesByToken = useFeesByToken();
-  const prices = usePrices();
-  const tokenMap = useTokenMap();
+export const Validations = ({
+  snapshot,
+}: {
+  snapshot?: UseQueryResult<AvalancheFeeUiSnapshot>;
+}) => {
+  const feesByToken = useFeesByToken(!snapshot);
+  const prices = usePrices(!snapshot);
+  const tokenMap = useTokenMap(!snapshot);
+  const atomic = Boolean(snapshot);
+  const publicationId = snapshot?.data?.publicationId;
+  const reviewedRows = snapshot?.data?.rows;
 
-  const error = feesByToken.error || prices.error || tokenMap.error;
+  const error = snapshot
+    ? snapshot.error
+    : feesByToken.error || prices.error || tokenMap.error;
 
-  const loading =
-    feesByToken.isLoading || prices.isLoading || tokenMap.isLoading;
+  const loading = snapshot
+    ? snapshot.isLoading
+    : feesByToken.isLoading || prices.isLoading || tokenMap.isLoading;
+
+  const selectedValidations = useMemo(
+    () => (atomic ? avalancheValidations(publicationId ?? '') : validations),
+    [publicationId, atomic],
+  );
 
   const tokens = useMemo(() => {
+    if (atomic) return reviewedRows ?? [];
     if (!feesByToken.data || !prices.data || !tokenMap.data) return [];
 
     return Object.keys(feesByToken.data).map((tokenId) => {
@@ -51,7 +69,7 @@ export const Validations = () => {
         ...token,
       };
     });
-  }, [feesByToken.data, prices.data, tokenMap.data]);
+  }, [reviewedRows, atomic, feesByToken.data, prices.data, tokenMap.data]);
 
   if (loading) {
     return (
@@ -96,7 +114,7 @@ export const Validations = () => {
               <TableCell className="border-l border-solid border-slate-300">
                 Price ($USD)
               </TableCell>
-              {validations.map((validation) => (
+              {selectedValidations.map((validation) => (
                 <TableCell
                   align="center"
                   className="border-l border-solid border-slate-300"
@@ -129,7 +147,7 @@ export const Validations = () => {
               >
                 <TableCell align="left">{token.name}</TableCell>
                 <TableCell align="left">{token.price}</TableCell>
-                {validations.map((validation) => (
+                {selectedValidations.map((validation) => (
                   <TableCell align="center" key={validation.id}>
                     <Validation
                       tokenId={token.ergoSideTokenId}

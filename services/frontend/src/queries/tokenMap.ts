@@ -22,8 +22,10 @@ export const fetchTokenMap = async () => {
   });
 };
 
-export const useTokenMap = () => {
+/** Read and initialize the existing TokenMap query when enabled. */
+export const useTokenMap = (enabled = true) => {
   return useQuery({
+    enabled,
     queryKey: ['tokenMap'],
     queryFn: async () => {
       const data = await unwrap(getRosenTokensSafe)();

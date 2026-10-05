@@ -1,17 +1,31 @@
 import { Box, CircularProgress, Typography } from '@mui/material';
+import type { UseQueryResult } from '@tanstack/react-query';
 
 import { QrDisplay } from '@/components';
 import { TxOnBlockchainAlert } from '@/containers';
 import { useTx } from '@/queries';
 
+import type { AvalancheFeeUiSnapshot } from '../avalanche/existingUi';
+
 /**
  * Qr container
  */
-export const Qr = () => {
-  const { data, isLoading, isError } = useTx();
+export const Qr = ({
+  snapshot,
+}: {
+  snapshot?: UseQueryResult<AvalancheFeeUiSnapshot>;
+}) => {
+  const legacy = useTx(!snapshot);
+  const data = snapshot ? snapshot.data?.tx : legacy.data;
+  const isLoading = snapshot
+    ? snapshot.isLoading || snapshot.isFetching
+    : legacy.isLoading;
+  const isError = snapshot ? snapshot.isError : legacy.isError;
   return (
     <>
-      <TxOnBlockchainAlert />
+      {(!snapshot || (!isLoading && !isError && data)) && (
+        <TxOnBlockchainAlert tx={snapshot ? data : undefined} />
+      )}
       {isLoading && (
         <Box
           display="flex"

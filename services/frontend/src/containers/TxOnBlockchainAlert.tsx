@@ -2,8 +2,18 @@ import { Alert } from '@mui/material';
 
 import { useCheckTxOnBlockchain } from '@/queries';
 
-export const TxOnBlockchainAlert = () => {
-  const { data, error, isLoading, isError } = useCheckTxOnBlockchain();
+/** Display the existing blockchain transaction check while forwarding the supplied transaction and query enablement. */
+export const TxOnBlockchainAlert = ({
+  tx,
+  enabled = true,
+}: {
+  tx?: string;
+  enabled?: boolean;
+}) => {
+  const { data, error, isLoading, isError } = useCheckTxOnBlockchain(
+    tx,
+    enabled,
+  );
 
   let severity: 'info' | 'success' | 'error';
   let message: string;

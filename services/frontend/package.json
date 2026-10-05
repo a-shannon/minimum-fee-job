@@ -10,6 +10,7 @@
   "license": "MIT",
   "author": "Rosen Team",
   "scripts": {
+    "test:avalanche": "node --import tsx ../../scripts/test-avalanche.mjs --service frontend",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
